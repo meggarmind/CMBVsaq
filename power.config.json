@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "appId": null,
+  "appId": "6f29ae17-fcf7-4fd1-86a3-d7c56e8158f6",
   "appDisplayName": "CMB-VSAQ",
   "region": "prod",
   "appType": "CodeApp",
@@ -11,5 +11,46 @@
   "localAppUrl": "http://localhost:3000",
   "logoPath": "Default",
   "connectionReferences": {},
-  "databaseReferences": {}
+  "databaseReferences": {
+    "default.cds": {
+      "dataSources": {
+        "vendors": {
+          "entitySetName": "cr871_vendors",
+          "logicalName": "cr871_vendor",
+          "isHidden": false
+        },
+        "assessments": {
+          "entitySetName": "cr871_assessments",
+          "logicalName": "cr871_assessment",
+          "isHidden": false
+        },
+        "questions": {
+          "entitySetName": "cr871_questions",
+          "logicalName": "cr871_question",
+          "isHidden": false
+        },
+        "responses": {
+          "entitySetName": "cr871_responses",
+          "logicalName": "cr871_response",
+          "isHidden": false
+        },
+        "settings": {
+          "entitySetName": "cr871_settings",
+          "logicalName": "cr871_setting",
+          "isHidden": false
+        },
+        "appusers": {
+          "entitySetName": "cr871_appusers",
+          "logicalName": "cr871_appuser",
+          "isHidden": false
+        },
+        "annotations": {
+          "entitySetName": "cr871_annotations",
+          "logicalName": "cr871_annotation",
+          "isHidden": false
+        }
+      },
+      "environmentVariableName": ""
+    }
+  }
 }
