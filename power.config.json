@@ -1,0 +1,15 @@
+{
+  "version": "1.0",
+  "appId": null,
+  "appDisplayName": "CMB-VSAQ",
+  "region": "prod",
+  "appType": "CodeApp",
+  "environmentId": "e203e4b3-24aa-e1a9-8ac9-dd987e006344",
+  "description": " ",
+  "buildPath": "./dist",
+  "buildEntryPoint": "index.html",
+  "localAppUrl": "http://localhost:3000",
+  "logoPath": "Default",
+  "connectionReferences": {},
+  "databaseReferences": {}
+}
