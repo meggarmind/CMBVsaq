@@ -124,6 +124,28 @@ Initialized once in `App.tsx` via `getContext()` from `@microsoft/power-apps/app
 | `/vendor-form` | `src/pages/vendor-form.tsx` | Vendor (no sidebar) |
 | `/access-denied` | `src/pages/access-denied.tsx` | Unauthenticated/denied users |
 
+## Vendors Screen (`src/pages/vendors/index.tsx`) — implemented
+
+Single-page UX: no navigation away from the list.
+
+- Searchable (client-side global filter), sortable table of `cr871_vendors`
+- Filter dropdowns: Current Risk Rating (`cr871_currentriskrating`) and Vendor Status (`cr871_vendorstatus`)
+- Client-side pagination — page size 15; "Showing X–Y of Z" + prev/next
+- **Row click** → opens Vendor Profile slide-in panel (Sheet); no `navigate()`
+- `profileVendor` resolved client-side from already-fetched `allVendors` — no extra Dataverse fetch
+- **Register New Vendor** button → opens Registration Form panel (blank)
+- **Profile panel**: read-only 2-col grid of all vendor fields; "Initiate New Assessment" button pre-fills Registration Form with vendor data (`registerVendorId` set = re-assess mode)
+- **Registration Form panel**: 8 fields; on Save:
+  1. Required-field guard (client-side)
+  2. RC uniqueness check via `Cr871_vendorsService.getAll` — inline error if duplicate; **no records written**
+  3. Assessor email check via `Cr871_appusersService.getAll` — inline error if not found; **no records written**
+  4. Create `cr871_vendors` record (new-vendor mode only)
+  5. Create `cr871_assessments` record with `cr871_status = 144610000` (Invited) + `cr871_invitedate`
+  6. Trigger Power Automate flow (best-effort `fetch` POST to `settingsStore.get("Flow_InviteURL", "")`)
+- In re-assess mode (from "Initiate New Assessment"): vendor fields are disabled; only assessment fields are editable; vendor creation step is skipped
+- Close without saving resets all state, writes nothing to Dataverse
+- `src/pages/vendors/detail.tsx` unchanged — still accessible via `/vendors/:id` for direct URL access
+
 ## Dashboard Screen (`src/pages/dashboard.tsx`) — implemented
 
 - Period selector top-right: This Month / This Quarter / This Year (client-side filter, no re-fetch)
