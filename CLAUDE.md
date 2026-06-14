@@ -180,6 +180,42 @@ Two-panel layout: `flex gap-6 items-start` — left panel `w-[380px] shrink-0`, 
 
 **OData lookup access:** `_cr871_questionid_value` is accessed via double-cast `(r as unknown as Record<string, unknown>)["_cr871_questionid_value"]` since it's a Dataverse-returned navigation field not present in the TypeScript model definition.
 
+## Vendor Form (`src/pages/vendor-form.tsx`) — implemented (Phase 5)
+
+Multi-screen wizard contained within `/vendor-form` route. State machine: `screen: "home" | "profile" | "section" | "submit" | "done"` + `currentSection: string | null`. No router changes — `?aid=` URL param preserved throughout.
+
+**Four data queries loaded once at component root:** assessment, responses, questions (ordered by sectionid + sortorder), and vendor record (fetched via `assessment._cr871_vendorid_value`).
+
+**Screen_Home:**
+- CMB-branded header using `bg-[--sidebar]` + `text-[--sidebar-primary]` Tailwind v4 CSS variable classes
+- Welcome message + due date label (red + days-remaining if ≤ 7 days from today)
+- `<Progress>` bar: answered/total applicable questions (answered = maturity ≠ NotAnswered 144610004)
+- Section checklist: applicable sections (data-driven from `cr871_applicableratings` on questions), each showing Not Started / In Progress / Complete badge; clickable → navigate to that section
+- "Edit Profile" → Screen_Profile; "Continue Assessment" → first section where status ≠ Complete; "Review & Submit" → Screen_Submit
+
+**Screen_Profile:**
+- Read-only grid: Company Name + Legal Entity Name + RC Number (from vendor record) + Contact Email (from assessment `cr871_vendorcontactemail`)
+- Editable "Primary Contact Name" saves to `cr871_vendorname` on assessment
+- `profileInitialized` useRef guard populates input once from assessment data
+- Back → Screen_Home; Next → first applicable section
+
+**Screen_Section:**
+- Single section at a time (replaces old Tabs-based layout)
+- Breadcrumb: Overview / {sectionName}; subsections grouped and sorted
+- Question cards identical to previous: maturity dropdown, response textarea, compensating controls textarea, Gate badge, Covered-by-cert badge
+- Bottom nav: "Back to Overview" | "Next: {sectionName}" or "Review & Submit" (if last section)
+
+**Screen_Submit:**
+- Summary table: section | status badge | answered/total per section
+- Overall `<Progress>` bar
+- "Submit Assessment" button → confirmation dialog → patches status=Submitted (144610002) + submitdate + overallscore → transitions to Screen_Done
+
+**Screen_Done:** full-page success message (CheckCircle2 icon).
+
+**Status transition (Invited → InProgress):** fires inside `handleFieldUpdate` on the first response field save. Guarded by `statusTransitioned` useRef (set optimistically, reset on failure) + secondary useEffect that sets ref if DB status is already ≠ Invited. Prevents duplicate patches.
+
+**Section applicability:** data-driven — `cr871_applicableratings` on each question contains the rating name substring (e.g., "Low", "Critical"). `isApplicableQuestion()` checks `ar.toLowerCase().includes(ratingName.toLowerCase())`.
+
 ## Dashboard Screen (`src/pages/dashboard.tsx`) — implemented
 
 - Period selector top-right: This Month / This Quarter / This Year (client-side filter, no re-fetch)
