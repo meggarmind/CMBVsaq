@@ -9,6 +9,7 @@ import AssessmentsPage from "@/pages/assessments/index"
 import AssessmentDetailPage from "@/pages/assessments/detail"
 import SettingsPage from "@/pages/settings"
 import VendorFormPage from "@/pages/vendor-form"
+import AccessDeniedPage from "@/pages/access-denied"
 
 // IMPORTANT: Do not remove or modify the code below!
 // Normalize basename when hosted in Power Apps
@@ -37,6 +38,11 @@ export const router = createBrowserRouter([
     path: "/vendor-form",
     element: <VendorFormPage />,
     errorElement: <NotFoundPage />,
+  },
+  {
+    // Shown when authenticated user has no cr871_appusers record
+    path: "/access-denied",
+    element: <AccessDeniedPage />,
   },
 ], {
   basename: BASENAME // IMPORTANT: Set basename for proper routing when hosted in Power Apps

@@ -10,6 +10,7 @@ interface AuthState {
   objectId: string | null
   assessmentId: string | null // set when role === 'Vendor'
   loading: boolean
+  denied: boolean // true when user is authenticated but not in cr871_appusers
   init: (queryParams: Record<string, string>, userPrincipalName?: string, objectId?: string, fullName?: string) => Promise<void>
 }
 
@@ -20,6 +21,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   objectId: null,
   assessmentId: null,
   loading: true,
+  denied: false,
 
   init: async (queryParams, userPrincipalName, objectId, fullName) => {
     const aid = queryParams["aid"] ?? queryParams["AID"] ?? null
@@ -42,7 +44,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       })
       const user = result.data?.[0]
       if (!user) {
-        set({ role: null, email, name: fullName ?? null, objectId: objectId ?? null, loading: false })
+        set({ role: null, denied: true, email, name: fullName ?? null, objectId: objectId ?? null, loading: false })
         return
       }
 

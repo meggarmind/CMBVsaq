@@ -1,6 +1,7 @@
 import { Outlet, NavLink, useNavigate } from "react-router-dom"
 import { useAuthStore } from "@/stores/auth-store"
 import { ModeToggle } from "@/components/mode-toggle"
+import { Skeleton } from "@/components/ui/skeleton"
 import { useEffect } from "react"
 
 const NAV_LINKS = [
@@ -13,49 +14,62 @@ const NAV_LINKS = [
 export default function Layout() {
   const role = useAuthStore(s => s.role)
   const loading = useAuthStore(s => s.loading)
+  const denied = useAuthStore(s => s.denied)
+  const email = useAuthStore(s => s.email)
   const navigate = useNavigate()
 
-  // Redirect vendor users away from the main layout
   useEffect(() => {
-    if (!loading && role === "Vendor") {
+    if (loading) return
+    if (denied) {
+      navigate("/access-denied", { replace: true })
+    } else if (role === "Vendor") {
       navigate("/vendor-form", { replace: true })
     }
-  }, [role, loading, navigate])
+  }, [role, loading, denied, navigate])
 
   const visibleLinks = NAV_LINKS.filter(l => !role || l.roles.includes(role))
 
   return (
-    <div className="min-h-dvh flex flex-col">
-      <header className="h-14 border-b flex items-center shrink-0">
-        <div className="mx-auto w-full max-w-7xl px-6 flex items-center justify-between">
-          <div className="flex items-center gap-6">
-            <span className="font-semibold text-sm tracking-tight">CMB VSAQ</span>
-            <nav className="flex items-center gap-1">
-              {visibleLinks.map(link => (
-                <NavLink
-                  key={link.to}
-                  to={link.to}
-                  className={({ isActive }) =>
-                    `text-sm px-3 py-1.5 rounded-md transition-colors ${
-                      isActive
-                        ? "bg-accent text-foreground font-medium"
-                        : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
-                    }`
-                  }
-                >
-                  {link.label}
-                </NavLink>
-              ))}
-            </nav>
-          </div>
-          <div className="flex items-center gap-2">
-            <ModeToggle />
-          </div>
+    <div className="min-h-dvh flex">
+      <aside className="w-56 shrink-0 flex flex-col bg-sidebar text-sidebar-foreground">
+        <div className="h-14 flex items-center px-5 border-b border-sidebar-border shrink-0">
+          <span className="font-bold tracking-tight text-sidebar-primary">CMB VSAQ</span>
         </div>
-      </header>
 
-      <main className="flex-1 flex flex-col">
-        <div className="flex-1 mx-auto w-full max-w-7xl px-6 py-6">
+        <nav className="flex-1 py-4 px-3 space-y-1">
+          {loading ? (
+            <>
+              <Skeleton className="h-8 w-full opacity-20" />
+              <Skeleton className="h-8 w-full opacity-20" />
+              <Skeleton className="h-8 w-full opacity-20" />
+            </>
+          ) : (
+            visibleLinks.map(link => (
+              <NavLink
+                key={link.to}
+                to={link.to}
+                className={({ isActive }) =>
+                  isActive
+                    ? "bg-sidebar-accent text-sidebar-primary font-semibold rounded-md px-3 py-2 text-sm block"
+                    : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground rounded-md px-3 py-2 text-sm block transition-colors"
+                }
+              >
+                {link.label}
+              </NavLink>
+            ))
+          )}
+        </nav>
+
+        <div className="p-3 border-t border-sidebar-border flex items-center gap-2">
+          <ModeToggle />
+          {email && (
+            <span className="text-xs text-sidebar-foreground/60 truncate min-w-0">{email}</span>
+          )}
+        </div>
+      </aside>
+
+      <main className="flex-1 min-w-0 overflow-auto">
+        <div className="max-w-7xl mx-auto px-6 py-6">
           <Outlet />
         </div>
       </main>
