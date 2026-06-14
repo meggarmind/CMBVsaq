@@ -146,6 +146,40 @@ Single-page UX: no navigation away from the list.
 - Close without saving resets all state, writes nothing to Dataverse
 - `src/pages/vendors/detail.tsx` unchanged — still accessible via `/vendors/:id` for direct URL access
 
+## Assessments Screen (`src/pages/assessments/index.tsx`) — implemented
+
+- Sortable table of `cr871_assessments` records
+- Columns: Assessment ID, Vendor Name, Risk Rating, Status, Overall Score, Risk Band, Submit Date, Due Date, Assessor Email, Actions
+- Server-side search (300ms debounced) filters by vendor name or Assessment ID via `contains()` OData
+- Status filter dropdown is server-side (included in query key); query re-fires on change
+- **Send Reminder** button appears only on In Progress (144610001) and Lapsed (144610005) rows:
+  1. Patches `cr871_remindercount` + 1 on that record
+  2. Invalidates query cache
+  3. Best-effort POST to `settingsStore.get("Flow_ReminderURL", "")` with `{ assessmentId }`
+- Row click navigates to `/assessments/:id`
+- Flow helper: local `triggerFlow(url, assessmentId)` function — silent failure, same pattern as Flow_InviteURL
+
+## Assessment Detail Screen (`src/pages/assessments/detail.tsx`) — implemented
+
+Two-panel layout: `flex gap-6 items-start` — left panel `w-[380px] shrink-0`, right panel `flex-1 min-w-0`.
+
+**Left panel:**
+- Metadata card: Vendor Name, Assessment ID, Risk Rating, Status, Overall Score, Risk Band, Submit Date, Due Date, Assessor Email, Vendor Contact
+- Section Breakdown table: per section — FI count, Partial count, NI count, mini progress bar (`<Progress>`) showing FI/(FI+Partial+NI)%; N/A and Not Answered excluded from denominator
+- Assessor Actions card (conditionally rendered):
+  - Visible to CISO always; visible to Assessor only when `cr871_assessoremail` matches signed-in `email`
+  - **Save Notes**: patches `cr871_assessornotes` only
+  - **Save Decision**: Select dropdown + button → patches `cr871_finaldecision` + sets `cr871_status = 144610004` (Complete) + stamps live score/band
+  - **Export Report**: best-effort POST to `settingsStore.get("Flow_ExportURL", "")` with `{ assessmentId }`
+
+**Right panel:**
+- Responses grouped by section → subsection, sorted by `cr871_sortorder`
+- Per response card: question text, evidence label, response text, compensating controls, maturity badge
+
+**Data init pattern:** `useRef(initialized)` guards a `useEffect` so notes/decision fields populate from the fetched assessment exactly once (avoids re-setting on every user keystroke).
+
+**OData lookup access:** `_cr871_questionid_value` is accessed via double-cast `(r as unknown as Record<string, unknown>)["_cr871_questionid_value"]` since it's a Dataverse-returned navigation field not present in the TypeScript model definition.
+
 ## Dashboard Screen (`src/pages/dashboard.tsx`) — implemented
 
 - Period selector top-right: This Month / This Quarter / This Year (client-side filter, no re-fetch)
