@@ -180,7 +180,7 @@ Two-panel layout: `flex gap-6 items-start` — left panel `w-[380px] shrink-0`, 
 
 **OData lookup access:** `_cr871_questionid_value` is accessed via double-cast `(r as unknown as Record<string, unknown>)["_cr871_questionid_value"]` since it's a Dataverse-returned navigation field not present in the TypeScript model definition.
 
-## Vendor Form (`src/pages/vendor-form.tsx`) — implemented (Phase 5)
+## Vendor Form (`src/pages/vendor-form.tsx`) — implemented (Phase 5 + 6)
 
 Multi-screen wizard contained within `/vendor-form` route. State machine: `screen: "home" | "profile" | "section" | "submit" | "done"` + `currentSection: string | null`. No router changes — `?aid=` URL param preserved throughout.
 
@@ -194,25 +194,32 @@ Multi-screen wizard contained within `/vendor-form` route. State machine: `scree
 - "Edit Profile" → Screen_Profile; "Continue Assessment" → first section where status ≠ Complete; "Review & Submit" → Screen_Submit
 
 **Screen_Profile:**
-- Read-only grid: Company Name + Legal Entity Name + RC Number (from vendor record) + Contact Email (from assessment `cr871_vendorcontactemail`)
-- Editable "Primary Contact Name" saves to `cr871_vendorname` on assessment
-- `profileInitialized` useRef guard populates input once from assessment data
+- Fully read-only grid: Company Name + Legal Entity Name + RC Number (from vendor record) + Contact Email + Primary Contact Name (from assessment)
 - Back → Screen_Home; Next → first applicable section
 
-**Screen_Section:**
-- Single section at a time (replaces old Tabs-based layout)
-- Breadcrumb: Overview / {sectionName}; subsections grouped and sorted
-- Question cards identical to previous: maturity dropdown, response textarea, compensating controls textarea, Gate badge, Covered-by-cert badge
-- Bottom nav: "Back to Overview" | "Next: {sectionName}" or "Review & Submit" (if last section)
+**Screen_Section (Phase 6):**
+- Single section at a time; breadcrumb shows "Overview / {sectionName}" + "Section X of Y" counter
+- **Batch save** — fields are locally controlled state (`localEdits: Map<questionId, LocalEdit>`); no immediate Dataverse writes on blur/change
+- `localEdits` seeded from `responseMap` when section changes (via `localEditsSection` ref guard); not reset on intermediate data refreshes
+- Bottom nav: "Save & Return Home" | "Discard" | "Save & Next: {name}" or "Save & Review" (last section); read-only mode shows Back/Next without saves
+- **Question cards render regardless of whether a Dataverse response record exists.** Save creates the record if missing (create-or-update pattern), so stub pre-creation is not a hard dependency.
+- **Gate logic — two patterns, distinguished by `cr871_iscoveredbycert` on the sub-question:**
+  - **HIDE-ON-YES** (G1B → 1.5–1.8, G8A → 8.1–8.2): sub-questions have `GateQuestionID` + `IsCoveredByCert=true`. Always visible. When gate local maturity = FI: grey overlay ("Covered by certification") appears. On Save with gate FI: written as `{maturitylevel: NotApplicable, iscovered: true}`. On Save with gate ≠ FI: actual values saved.
+  - **SHOW-ON-YES** (G2E → 2.12–2.14, G3C → 3.6–3.7, G7D → 7.10): sub-questions have `GateQuestionID` + `IsCoveredByCert=false`. Hidden until gate local maturity = FI. On Save with gate ≠ FI: written as `{maturitylevel: NotApplicable, iscovered: true}`. On Save with gate FI: actual values saved.
+  - **Neutral** (G5A): `IsGateQuestion=true` but no sub-questions with `GateQuestionID` pointing to it — renders as a normal question, no hide/show effect.
+- Gate logic is **per-question** (each sub-question looks up its own `cr871_gatequestionid` in `localEdits`), so multiple gates in one section are handled correctly.
+- Gate trigger: maturity = Fully Implemented (144610000) = "Yes" answer on the gate question.
+- **Resume support**: `localEdits` initialised from saved responses, so gate overlay and visibility restore correctly on re-open.
 
 **Screen_Submit:**
 - Summary table: section | status badge | answered/total per section
 - Overall `<Progress>` bar
+- Submit blocked with amber warning if `answeredCount < totalCount`
 - "Submit Assessment" button → confirmation dialog → patches status=Submitted (144610002) + submitdate + overallscore → transitions to Screen_Done
 
 **Screen_Done:** full-page success message (CheckCircle2 icon).
 
-**Status transition (Invited → InProgress):** fires inside `handleFieldUpdate` on the first response field save. Guarded by `statusTransitioned` useRef (set optimistically, reset on failure) + secondary useEffect that sets ref if DB status is already ≠ Invited. Prevents duplicate patches.
+**Status transition (Invited → InProgress):** fires inside `handleSectionSave` on first Save. Guarded by `statusTransitioned` useRef (set optimistically, reset on failure) + secondary useEffect that sets ref if DB status is already ≠ Invited.
 
 **Section applicability:** data-driven — `cr871_applicableratings` on each question contains the rating name substring (e.g., "Low", "Critical"). `isApplicableQuestion()` checks `ar.toLowerCase().includes(ratingName.toLowerCase())`.
 

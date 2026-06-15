@@ -28,10 +28,13 @@ const READ_ONLY_STATUSES = new Set([144610002, 144610003, 144610004])
 const INVITED = 144610000
 const IN_PROGRESS = 144610001
 const NOT_ANSWERED = 144610004
+const FI = 144610000
+const NOT_APPLICABLE = 144610003
 
 type VendorScreen = "home" | "profile" | "section" | "submit" | "done"
 type SectionStatus = "Not Started" | "In Progress" | "Complete"
 type ResponseMap = Map<string, Cr871_responses>
+type LocalEdit = { maturity: number; text: string; controls: string }
 
 function isApplicableQuestion(q: Cr871_questions, ratingName?: string): boolean {
   if (!ratingName) return true
@@ -84,9 +87,12 @@ export default function VendorFormPage() {
   const [submitting, setSubmitting] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
   const [stubsDone, setStubsDone] = useState(false)
+  const [localEdits, setLocalEdits] = useState<Map<string, LocalEdit>>(new Map())
+  const [saving, setSaving] = useState(false)
 
   const initDone = useRef(false)
   const statusTransitioned = useRef(false)
+  const localEditsSection = useRef<string | null>(null)
 
   const { data: assessmentResult, isLoading: assessmentLoading } = useQuery({
     queryKey: ["cr871_assessments", assessmentId],
@@ -190,28 +196,89 @@ export default function VendorFormPage() {
     void createStubs()
   }, [assessmentLoading, responsesLoading, questionsLoading, stubsDone, isReadOnly, createStubs])
 
-  function goToSection(section: string) { setCurrentSection(section); setScreen("section") }
-  function goHome() { setScreen("home") }
+  function goToSection(section: string) { localEditsSection.current = null; setCurrentSection(section); setScreen("section") }
+  function goHome() { localEditsSection.current = null; setScreen("home") }
   function goProfile() { setScreen("profile") }
   function goSubmit() { setScreen("submit") }
 
-  async function handleFieldUpdate(responseId: string, field: string, value: string) {
-    if (statusCode === INVITED && assessmentId && !statusTransitioned.current) {
+  useEffect(() => {
+    if (!currentSection || screen !== "section") return
+    if (localEditsSection.current !== null) return
+    if (!responsesResult || applicableQuestions.length === 0) return
+    localEditsSection.current = currentSection
+    const sectionQs = applicableQuestions.filter(q => (q.cr871_sectionid ?? "General") === currentSection)
+    const edits = new Map<string, LocalEdit>()
+    for (const q of sectionQs) {
+      const r = responseMap.get(q.cr871_questionid)
+      edits.set(q.cr871_questionid, {
+        maturity: (r?.cr871_maturitylevel as unknown as number) ?? NOT_ANSWERED,
+        text: r?.cr871_responsetext ?? "",
+        controls: r?.cr871_compensatingcontrols ?? "",
+      })
+    }
+    setLocalEdits(edits)
+  }, [currentSection, screen, applicableQuestions, responseMap, responsesResult])
+
+  async function handleSectionSave(andThen: "home" | "next" | null) {
+    if (!assessmentId || saving) return
+    if (statusCode === INVITED && !statusTransitioned.current) {
       statusTransitioned.current = true
       try {
         await Cr871_assessmentsService.update(assessmentId, { cr871_status: IN_PROGRESS as never })
         await queryClient.invalidateQueries({ queryKey: ["cr871_assessments", assessmentId] })
-      } catch {
-        statusTransitioned.current = false
-      }
+      } catch { statusTransitioned.current = false }
     }
+    setSaving(true)
     try {
-      await Cr871_responsesService.update(responseId, {
-        [field]: field === "cr871_maturitylevel" ? Number(value) as never : value,
-      })
+      const sectionQs = applicableQuestions.filter(q => (q.cr871_sectionid ?? "General") === currentSection)
+      await Promise.all(sectionQs.map(async q => {
+        const edit = localEdits.get(q.cr871_questionid)
+        if (!edit) return
+        let maturity = edit.maturity
+        let iscovered = false
+        if (q.cr871_gatequestionid) {
+          const gateMaturity = localEdits.get(q.cr871_gatequestionid)?.maturity
+          if (q.cr871_iscoveredbycert) {
+            if (gateMaturity === FI) { maturity = NOT_APPLICABLE; iscovered = true }
+          } else {
+            if (gateMaturity !== FI) { maturity = NOT_APPLICABLE; iscovered = true }
+          }
+        }
+        const response = responseMap.get(q.cr871_questionid)
+        if (response) {
+          await Cr871_responsesService.update(response.cr871_responseid, {
+            cr871_maturitylevel: maturity as never,
+            cr871_responsetext: edit.text,
+            cr871_compensatingcontrols: edit.controls,
+            cr871_iscovered: iscovered,
+          })
+        } else {
+          await Cr871_responsesService.create({
+            "cr871_AssessmentID@odata.bind": `/cr871_assessments(${assessmentId})`,
+            "cr871_QuestionID@odata.bind": `/cr871_questions(${q.cr871_questionid})`,
+            cr871_maturitylevel: maturity as never,
+            cr871_responsetext: edit.text,
+            cr871_compensatingcontrols: edit.controls,
+            cr871_iscovered: iscovered,
+            cr871_isgatequestion: q.cr871_isgatequestion ?? false,
+            cr871_sectionid: q.cr871_sectionid,
+            ownerid: "",
+            owneridtype: "systemusers",
+            statecode: 0,
+          })
+        }
+      }))
       await queryClient.invalidateQueries({ queryKey: ["cr871_responses", "assessment", assessmentId] })
+      toast.success("Saved.")
+      if (andThen === "home") goHome()
+      else if (andThen === "next") {
+        if (nextSection) goToSection(nextSection)
+        else goSubmit()
+      }
     } catch {
       toast.error("Failed to save. Please try again.")
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -456,16 +523,21 @@ export default function VendorFormPage() {
       <div className="min-h-dvh flex flex-col bg-background">
         {VendorHeader}
         <main className="flex-1 max-w-2xl mx-auto w-full px-6 py-6 space-y-6">
-          <div className="flex items-center gap-2 text-sm">
-            <button
-              type="button"
-              className="text-muted-foreground hover:text-foreground transition-colors"
-              onClick={goHome}
-            >
-              Overview
-            </button>
-            <span className="text-muted-foreground">/</span>
-            <h1 className="text-xl font-semibold">{currentSection}</h1>
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-2 text-sm">
+              <button
+                type="button"
+                className="text-muted-foreground hover:text-foreground transition-colors"
+                onClick={goHome}
+              >
+                Overview
+              </button>
+              <span className="text-muted-foreground">/</span>
+              <h1 className="text-xl font-semibold">{currentSection}</h1>
+            </div>
+            <span className="text-xs text-muted-foreground shrink-0">
+              Section {sectionIndex + 1} of {orderedSections.length}
+            </span>
           </div>
 
           {isReadOnly && (
@@ -491,89 +563,120 @@ export default function VendorFormPage() {
                     )}
                     <div className="space-y-4">
                       {questions.map(q => {
+                        const isVisible =
+                          !q.cr871_gatequestionid ||
+                          q.cr871_iscoveredbycert ||
+                          localEdits.get(q.cr871_gatequestionid)?.maturity === FI
+                        if (!isVisible) return null
                         const response = responseMap.get(q.cr871_questionid)
-                        if (!response) return null
-                        const maturityCode = response.cr871_maturitylevel as unknown as number
+                        const maturityCode = (response?.cr871_maturitylevel as unknown as number) ?? NOT_ANSWERED
+                        const edit = localEdits.get(q.cr871_questionid)
+                        const isCoveredByGate =
+                          !!q.cr871_iscoveredbycert &&
+                          !!q.cr871_gatequestionid &&
+                          localEdits.get(q.cr871_gatequestionid)?.maturity === FI
                         return (
-                          <Card key={q.cr871_questionid}>
-                            <CardContent className="py-4 space-y-3">
-                              <div className="flex items-start justify-between gap-4">
-                                <p className="text-sm font-medium leading-snug flex-1">
-                                  {q.cr871_isgatequestion && (
-                                    <span className="inline-block mr-2 text-xs rounded bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200 px-1.5 py-0.5 font-normal">
-                                      Gate
+                          <div key={q.cr871_questionid} className="relative">
+                            <Card>
+                              <CardContent className="py-4 space-y-3">
+                                <div className="flex items-start justify-between gap-4">
+                                  <p className="text-sm font-medium leading-snug flex-1">
+                                    {q.cr871_isgatequestion && (
+                                      <span className="inline-block mr-2 text-xs rounded bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200 px-1.5 py-0.5 font-normal">
+                                        Gate
+                                      </span>
+                                    )}
+                                    {q.cr871_questiontext}
+                                  </p>
+                                  {response?.cr871_iscovered && !isCoveredByGate && (
+                                    <span className="shrink-0 text-xs rounded bg-gray-100 dark:bg-gray-800 text-gray-500 px-2 py-0.5">
+                                      Covered by cert
                                     </span>
                                   )}
-                                  {q.cr871_questiontext}
-                                </p>
-                                {response.cr871_iscovered && (
-                                  <span className="shrink-0 text-xs rounded bg-gray-100 dark:bg-gray-800 text-gray-500 px-2 py-0.5">
-                                    Covered by cert
-                                  </span>
-                                )}
-                              </div>
-                              {q.cr871_evidencerequired && (
-                                <p className="text-xs text-muted-foreground italic">
-                                  Evidence required: {q.cr871_evidencerequired}
-                                </p>
-                              )}
-                              <div className="space-y-1.5">
-                                <p className="text-xs font-medium text-muted-foreground">Maturity Level</p>
-                                {isReadOnly ? (
-                                  <span className={cn(
-                                    "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
-                                    MATURITY_COLOR[maturityCode] ?? ""
-                                  )}>
-                                    {MATURITY_LABEL[maturityCode] ?? "—"}
-                                  </span>
-                                ) : (
-                                  <Select
-                                    defaultValue={maturityCode ? String(maturityCode) : ""}
-                                    onValueChange={val => handleFieldUpdate(response.cr871_responseid, "cr871_maturitylevel", val)}
-                                  >
-                                    <SelectTrigger className="w-64 h-8 text-sm">
-                                      <SelectValue placeholder="Select maturity…" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      {MATURITY_OPTIONS.filter(o => o.value !== "144610004").map(o => (
-                                        <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                                      ))}
-                                    </SelectContent>
-                                  </Select>
-                                )}
-                              </div>
-                              <div className="space-y-1.5">
-                                <p className="text-xs font-medium text-muted-foreground">Response / Comments</p>
-                                {isReadOnly ? (
-                                  <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                                    {response.cr871_responsetext || "—"}
+                                </div>
+                                {q.cr871_evidencerequired && (
+                                  <p className="text-xs text-muted-foreground italic">
+                                    Evidence required: {q.cr871_evidencerequired}
                                   </p>
-                                ) : (
-                                  <Textarea
-                                    defaultValue={response.cr871_responsetext ?? ""}
-                                    rows={2}
-                                    placeholder="Describe your implementation…"
-                                    onBlur={e => handleFieldUpdate(response.cr871_responseid, "cr871_responsetext", e.target.value)}
-                                  />
                                 )}
+                                <div className="space-y-1.5">
+                                  <p className="text-xs font-medium text-muted-foreground">Maturity Level</p>
+                                  {isReadOnly ? (
+                                    <span className={cn(
+                                      "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
+                                      MATURITY_COLOR[maturityCode] ?? ""
+                                    )}>
+                                      {MATURITY_LABEL[maturityCode] ?? "—"}
+                                    </span>
+                                  ) : (
+                                    <Select
+                                      value={edit ? String(edit.maturity) : ""}
+                                      onValueChange={val => setLocalEdits(prev => {
+                                        const next = new Map(prev)
+                                        const cur = next.get(q.cr871_questionid)
+                                        if (cur) next.set(q.cr871_questionid, { ...cur, maturity: Number(val) })
+                                        return next
+                                      })}
+                                    >
+                                      <SelectTrigger className="w-64 h-8 text-sm">
+                                        <SelectValue placeholder="Select maturity…" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {MATURITY_OPTIONS.filter(o => o.value !== "144610004").map(o => (
+                                          <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  )}
+                                </div>
+                                <div className="space-y-1.5">
+                                  <p className="text-xs font-medium text-muted-foreground">Response / Comments</p>
+                                  {isReadOnly ? (
+                                    <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                                      {response?.cr871_responsetext || "—"}
+                                    </p>
+                                  ) : (
+                                    <Textarea
+                                      value={edit?.text ?? ""}
+                                      rows={2}
+                                      placeholder="Describe your implementation…"
+                                      onChange={e => setLocalEdits(prev => {
+                                        const next = new Map(prev)
+                                        const cur = next.get(q.cr871_questionid)
+                                        if (cur) next.set(q.cr871_questionid, { ...cur, text: e.target.value })
+                                        return next
+                                      })}
+                                    />
+                                  )}
+                                </div>
+                                <div className="space-y-1.5">
+                                  <p className="text-xs font-medium text-muted-foreground">Compensating Controls (if any)</p>
+                                  {isReadOnly ? (
+                                    <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                                      {response?.cr871_compensatingcontrols || "—"}
+                                    </p>
+                                  ) : (
+                                    <Textarea
+                                      value={edit?.controls ?? ""}
+                                      rows={2}
+                                      placeholder="Describe any compensating controls…"
+                                      onChange={e => setLocalEdits(prev => {
+                                        const next = new Map(prev)
+                                        const cur = next.get(q.cr871_questionid)
+                                        if (cur) next.set(q.cr871_questionid, { ...cur, controls: e.target.value })
+                                        return next
+                                      })}
+                                    />
+                                  )}
+                                </div>
+                              </CardContent>
+                            </Card>
+                            {isCoveredByGate && (
+                              <div className="absolute inset-0 bg-gray-50/90 dark:bg-gray-900/90 rounded-lg flex items-center justify-center pointer-events-none">
+                                <span className="text-sm font-medium text-gray-500">Covered by certification</span>
                               </div>
-                              <div className="space-y-1.5">
-                                <p className="text-xs font-medium text-muted-foreground">Compensating Controls (if any)</p>
-                                {isReadOnly ? (
-                                  <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                                    {response.cr871_compensatingcontrols || "—"}
-                                  </p>
-                                ) : (
-                                  <Textarea
-                                    defaultValue={response.cr871_compensatingcontrols ?? ""}
-                                    rows={2}
-                                    placeholder="Describe any compensating controls…"
-                                    onBlur={e => handleFieldUpdate(response.cr871_responseid, "cr871_compensatingcontrols", e.target.value)}
-                                  />
-                                )}
-                              </div>
-                            </CardContent>
-                          </Card>
+                            )}
+                          </div>
                         )
                       })}
                     </div>
@@ -582,14 +685,27 @@ export default function VendorFormPage() {
             </div>
           )}
 
-          <div className="flex justify-between pt-4 border-t">
-            <Button variant="outline" onClick={goHome}>Back to Overview</Button>
-            {nextSection ? (
-              <Button onClick={() => goToSection(nextSection)}>Next: {nextSection}</Button>
-            ) : (
-              <Button onClick={goSubmit}>Review &amp; Submit</Button>
-            )}
-          </div>
+          {isReadOnly ? (
+            <div className="flex justify-between pt-4 border-t">
+              <Button variant="outline" onClick={goHome}>Back to Overview</Button>
+              {nextSection
+                ? <Button variant="outline" onClick={() => goToSection(nextSection)}>Next: {nextSection}</Button>
+                : <Button variant="outline" onClick={goSubmit}>View Summary</Button>
+              }
+            </div>
+          ) : (
+            <div className="flex justify-between pt-4 border-t">
+              <Button variant="outline" onClick={() => void handleSectionSave("home")} disabled={saving}>
+                {saving ? "Saving…" : "Save & Return Home"}
+              </Button>
+              <div className="flex gap-2">
+                <Button variant="ghost" onClick={goHome} disabled={saving}>Discard</Button>
+                <Button onClick={() => void handleSectionSave("next")} disabled={saving}>
+                  {saving ? "Saving…" : nextSection ? `Save & Next: ${nextSection}` : "Save & Review"}
+                </Button>
+              </div>
+            </div>
+          )}
         </main>
       </div>
     )
