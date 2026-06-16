@@ -241,3 +241,20 @@ Multi-screen wizard contained within `/vendor-form` route. State machine: `scree
 - Top Vendors panel: Top 3 Lowest Risk + Top 3 Highest Risk, filtered to vendors with period-complete assessments
 - Sortable assessment table with 300ms debounced server-side vendor name search
 - Assessor role: `cr871_assessoremail eq '${email}'` appended to OData filter server-side (included in query key)
+
+## Settings Screen (`src/pages/settings.tsx`) — implemented (Phase 8)
+
+CISO-only (redirect to `/dashboard` if not CISO). Four setting panels + one App Users panel.
+
+**Setting panels (Risk Band Thresholds / Assessment Frequency / Reminders / Email Templates):**
+- Controlled state per panel — `useState<Record<string,string>>` lazy-initialised from `settingsStore.get()`, reset via `useEffect` when `settingsStore.loading` transitions to `false`
+- Each panel has a **Save All** button (`CardFooter`) that calls `settingsStore.save()` for every key in the panel concurrently via `Promise.all`
+- Email template textareas display available merge tags as inline `<code>` chips beneath each field: `{VendorName}` `{AssessmentID}` `{DueDate}` `{AppURL}`
+- `settingsStore.save()` already handles create-or-update; no store changes needed
+
+**App Users panel (`cr871_appusers`):**
+- `useQuery` fetches all active users ordered by name; table shows Name / Email / Role
+- Role display: `144610000` → "CISO", `144610001` → "Assessor"
+- **Add User** inline form (Name + Email + Role Select) below the table → `Cr871_appusersService.create()` → invalidates query cache
+- **Delete**: trash icon per row → `window.confirm` → `Cr871_appusersService.delete()` → invalidates query cache
+- New users gain access on their next login (auth-store looks up `cr871_appusers` by UPN email at init)
