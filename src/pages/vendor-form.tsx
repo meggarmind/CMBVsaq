@@ -1,9 +1,11 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { CheckCircle2 } from "lucide-react"
+import { CheckCircle2, Trash2, Upload, FileText } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
@@ -16,6 +18,7 @@ import { Cr871_assessmentsService } from "@/generated/services/Cr871_assessments
 import { Cr871_responsesService } from "@/generated/services/Cr871_responsesService"
 import { Cr871_questionsService } from "@/generated/services/Cr871_questionsService"
 import { Cr871_vendorsService } from "@/generated/services/Cr871_vendorsService"
+import { Cr871_annotationsService } from "@/generated/services/Cr871_annotationsService"
 import type { Cr871_responses } from "@/generated/models/Cr871_responsesModel"
 import type { Cr871_questions } from "@/generated/models/Cr871_questionsModel"
 import { MATURITY_LABEL, MATURITY_COLOR } from "@/lib/labels"
@@ -31,10 +34,22 @@ const NOT_ANSWERED = 144610004
 const FI = 144610000
 const NOT_APPLICABLE = 144610003
 
-type VendorScreen = "home" | "profile" | "section" | "submit" | "done"
+type VendorScreen = "home" | "profile" | "section" | "evidence" | "submit" | "confirmation"
 type SectionStatus = "Not Started" | "In Progress" | "Complete"
 type ResponseMap = Map<string, Cr871_responses>
 type LocalEdit = { maturity: number; text: string; controls: string }
+
+interface AnnotationMeta {
+  assessmentId?: string
+  sectionId?: string | null
+  questionId?: string | null
+  uploadedBy?: string
+  fileName?: string
+}
+
+function parseAnnotationMeta(notetext?: string): AnnotationMeta | null {
+  try { return notetext ? (JSON.parse(notetext) as AnnotationMeta) : null } catch { return null }
+}
 
 function isApplicableQuestion(q: Cr871_questions, ratingName?: string): boolean {
   if (!ratingName) return true
@@ -63,6 +78,23 @@ function getSectionStatus(
   return "In Progress"
 }
 
+function getSectionCounts(
+  sectionId: string,
+  questions: Cr871_questions[],
+  responseMap: ResponseMap,
+) {
+  const qs = questions.filter(q => (q.cr871_sectionid ?? "General") === sectionId)
+  let fi = 0, partial = 0, ni = 0, na = 0
+  for (const q of qs) {
+    const m = (responseMap.get(q.cr871_questionid)?.cr871_maturitylevel as unknown as number) ?? NOT_ANSWERED
+    if (m === FI) fi++
+    else if (m === 144610001) partial++
+    else if (m === 144610002) ni++
+    else if (m === NOT_APPLICABLE) na++
+  }
+  return { fi, partial, ni, na }
+}
+
 const SECTION_STATUS_CLASS: Record<SectionStatus, string> = {
   "Not Started": "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400",
   "In Progress": "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
@@ -89,10 +121,16 @@ export default function VendorFormPage() {
   const [stubsDone, setStubsDone] = useState(false)
   const [localEdits, setLocalEdits] = useState<Map<string, LocalEdit>>(new Map())
   const [saving, setSaving] = useState(false)
+  const [declarationChecked, setDeclarationChecked] = useState(false)
+  const [evidenceSectionFilter, setEvidenceSectionFilter] = useState("")
+  const [evidenceQuestionFilter, setEvidenceQuestionFilter] = useState("")
+  const [evidenceFile, setEvidenceFile] = useState<File | null>(null)
+  const [uploading, setUploading] = useState(false)
 
   const initDone = useRef(false)
   const statusTransitioned = useRef(false)
   const localEditsSection = useRef<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const { data: assessmentResult, isLoading: assessmentLoading } = useQuery({
     queryKey: ["cr871_assessments", assessmentId],
@@ -116,6 +154,14 @@ export default function VendorFormPage() {
     }),
   })
 
+  const { data: annotationsResult } = useQuery({
+    queryKey: ["cr871_annotations", "assessment", assessmentId],
+    queryFn: () => Cr871_annotationsService.getAll({
+      filter: `statecode eq 0 and contains(cr871_notetext,'${assessmentId}')`,
+    }),
+    enabled: !!assessmentId,
+  })
+
   const assessment = assessmentResult?.data
   const vendorId = assessment?._cr871_vendorid_value
 
@@ -128,6 +174,7 @@ export default function VendorFormPage() {
 
   const allResponses = useMemo(() => responsesResult?.data ?? [], [responsesResult?.data])
   const allQuestions = useMemo(() => questionsResult?.data ?? [], [questionsResult?.data])
+  const allAnnotations = useMemo(() => annotationsResult?.data ?? [], [annotationsResult?.data])
 
   const ratingName = assessment?.cr871_riskratingname
   const statusCode = assessment?.cr871_status as unknown as number
@@ -144,6 +191,23 @@ export default function VendorFormPage() {
   )
 
   const orderedSections = useMemo(() => getOrderedSections(applicableQuestions), [applicableQuestions])
+
+  const questionMap = useMemo(
+    () => new Map(allQuestions.map(q => [q.cr871_questionid, q])),
+    [allQuestions]
+  )
+
+  const evidenceQuestions = useMemo(
+    () => applicableQuestions.filter(q => !!q.cr871_evidencerequired),
+    [applicableQuestions]
+  )
+
+  const evidenceQuestionsInSection = useMemo(
+    () => evidenceSectionFilter
+      ? evidenceQuestions.filter(q => (q.cr871_sectionid ?? "General") === evidenceSectionFilter)
+      : evidenceQuestions,
+    [evidenceQuestions, evidenceSectionFilter]
+  )
 
   const answeredCount = useMemo(
     () => applicableQuestions.filter(q => {
@@ -199,7 +263,8 @@ export default function VendorFormPage() {
   function goToSection(section: string) { localEditsSection.current = null; setCurrentSection(section); setScreen("section") }
   function goHome() { localEditsSection.current = null; setScreen("home") }
   function goProfile() { setScreen("profile") }
-  function goSubmit() { setScreen("submit") }
+  function goEvidence() { setScreen("evidence") }
+  function goSubmit() { setDeclarationChecked(false); setScreen("submit") }
 
   useEffect(() => {
     if (!currentSection || screen !== "section") return
@@ -282,6 +347,51 @@ export default function VendorFormPage() {
     }
   }
 
+  async function handleEvidenceUpload() {
+    if (!evidenceFile || !assessmentId || uploading) return
+    setUploading(true)
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result as string)
+        reader.onerror = () => reject(new Error("Read failed"))
+        reader.readAsDataURL(evidenceFile)
+      })
+      await Cr871_annotationsService.create({
+        cr871_annotation1: evidenceFile.name,
+        cr871_attachmenturl: dataUrl,
+        cr871_notetext: JSON.stringify({
+          assessmentId,
+          sectionId: evidenceSectionFilter || null,
+          questionId: evidenceQuestionFilter || null,
+          uploadedBy: assessment?.cr871_vendorcontactemail ?? "",
+          fileName: evidenceFile.name,
+        }),
+        ownerid: "",
+        owneridtype: "systemusers",
+        statecode: 0,
+      })
+      await queryClient.invalidateQueries({ queryKey: ["cr871_annotations", "assessment", assessmentId] })
+      toast.success("File uploaded.")
+      setEvidenceFile(null)
+      if (fileInputRef.current) fileInputRef.current.value = ""
+    } catch {
+      toast.error("Upload failed. Please try again.")
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  async function handleEvidenceDelete(annotationId: string) {
+    try {
+      await Cr871_annotationsService.delete(annotationId)
+      await queryClient.invalidateQueries({ queryKey: ["cr871_annotations", "assessment", assessmentId] })
+      toast.success("File removed.")
+    } catch {
+      toast.error("Failed to remove file.")
+    }
+  }
+
   async function handleSubmit() {
     if (!assessmentId) return
     setSubmitting(true)
@@ -293,7 +403,7 @@ export default function VendorFormPage() {
         cr871_submitdate: today,
         cr871_overallscore: liveScore,
       })
-      setScreen("done")
+      setScreen("confirmation")
       setShowConfirm(false)
     } catch {
       toast.error("Submission failed. Please try again.")
@@ -358,16 +468,22 @@ export default function VendorFormPage() {
     )
   }
 
-  if (screen === "done") {
+  if (screen === "confirmation") {
     return (
       <div className="min-h-dvh flex flex-col bg-background">
         {VendorHeader}
         <div className="flex-1 grid place-items-center">
-          <div className="text-center space-y-4">
+          <div className="text-center space-y-4 max-w-sm px-6">
             <CheckCircle2 className="h-16 w-16 text-green-500 mx-auto" />
             <h1 className="text-2xl font-semibold">Submitted Successfully</h1>
-            <p className="text-muted-foreground max-w-sm">
+            <p className="text-muted-foreground">
               Thank you. Your responses have been submitted for review. You will be contacted if further information is required.
+            </p>
+            <p className="text-sm text-muted-foreground">
+              Assessment reference:{" "}
+              <span className="font-mono font-medium">
+                {assessment.cr871_assessmentid1 ?? assessmentId}
+              </span>
             </p>
           </div>
         </div>
@@ -468,6 +584,7 @@ export default function VendorFormPage() {
                 </Button>
               </>
             )}
+            <Button variant="outline" onClick={goEvidence}>Upload Evidence</Button>
             <Button variant="outline" onClick={goSubmit}>
               {isReadOnly ? "View Summary" : "Review & Submit"}
             </Button>
@@ -688,10 +805,13 @@ export default function VendorFormPage() {
           {isReadOnly ? (
             <div className="flex justify-between pt-4 border-t">
               <Button variant="outline" onClick={goHome}>Back to Overview</Button>
-              {nextSection
-                ? <Button variant="outline" onClick={() => goToSection(nextSection)}>Next: {nextSection}</Button>
-                : <Button variant="outline" onClick={goSubmit}>View Summary</Button>
-              }
+              <div className="flex gap-2">
+                <Button variant="ghost" onClick={goEvidence}>Upload Evidence</Button>
+                {nextSection
+                  ? <Button variant="outline" onClick={() => goToSection(nextSection)}>Next: {nextSection}</Button>
+                  : <Button variant="outline" onClick={goSubmit}>View Summary</Button>
+                }
+              </div>
             </div>
           ) : (
             <div className="flex justify-between pt-4 border-t">
@@ -699,6 +819,7 @@ export default function VendorFormPage() {
                 {saving ? "Saving…" : "Save & Return Home"}
               </Button>
               <div className="flex gap-2">
+                <Button variant="ghost" onClick={goEvidence} disabled={saving}>Upload Evidence</Button>
                 <Button variant="ghost" onClick={goHome} disabled={saving}>Discard</Button>
                 <Button onClick={() => void handleSectionSave("next")} disabled={saving}>
                   {saving ? "Saving…" : nextSection ? `Save & Next: ${nextSection}` : "Save & Review"}
@@ -706,6 +827,141 @@ export default function VendorFormPage() {
               </div>
             </div>
           )}
+        </main>
+      </div>
+    )
+  }
+
+  if (screen === "evidence") {
+    return (
+      <div className="min-h-dvh flex flex-col bg-background">
+        {VendorHeader}
+        <main className="flex-1 max-w-2xl mx-auto w-full px-6 py-6 space-y-6">
+          <div className="flex items-center justify-between">
+            <h1 className="text-xl font-semibold">Evidence &amp; Attachments</h1>
+            <Button variant="outline" size="sm" onClick={goHome}>Back to Overview</Button>
+          </div>
+
+          <Card>
+            <CardContent className="py-4 space-y-4">
+              <p className="text-sm font-medium">Upload a file</p>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <p className="text-xs font-medium text-muted-foreground">Section (optional)</p>
+                  <Select
+                    value={evidenceSectionFilter || "all"}
+                    onValueChange={v => {
+                      setEvidenceSectionFilter(v === "all" ? "" : v)
+                      setEvidenceQuestionFilter("")
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="All sections" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All sections</SelectItem>
+                      {orderedSections.map(s => (
+                        <SelectItem key={s} value={s}>{s}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <p className="text-xs font-medium text-muted-foreground">Question Reference (optional)</p>
+                  <Select
+                    value={evidenceQuestionFilter || "any"}
+                    onValueChange={v => setEvidenceQuestionFilter(v === "any" ? "" : v)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Any question" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="any">Any question (general)</SelectItem>
+                      {evidenceQuestionsInSection.map(q => (
+                        <SelectItem key={q.cr871_questionid} value={q.cr871_questionid}>
+                          {(q.cr871_questiontext ?? q.cr871_questionid).slice(0, 80)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 flex-wrap">
+                <label className="inline-flex items-center gap-2 rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium cursor-pointer hover:bg-muted transition-colors">
+                  <FileText className="h-4 w-4 shrink-0" />
+                  <span className="max-w-xs truncate">
+                    {evidenceFile ? evidenceFile.name : "Choose file…"}
+                  </span>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    className="hidden"
+                    onChange={e => setEvidenceFile(e.target.files?.[0] ?? null)}
+                  />
+                </label>
+                <Button
+                  disabled={!evidenceFile || uploading}
+                  onClick={() => void handleEvidenceUpload()}
+                >
+                  <Upload className="h-4 w-4 mr-2" />
+                  {uploading ? "Uploading…" : "Upload"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="py-4">
+              <p className="text-sm font-medium mb-3">Uploaded Files</p>
+              {allAnnotations.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No files uploaded yet.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b">
+                        <th className="text-left pb-2 font-medium text-muted-foreground">File Name</th>
+                        <th className="text-left pb-2 font-medium text-muted-foreground">Section</th>
+                        <th className="text-left pb-2 font-medium text-muted-foreground">Question Reference</th>
+                        <th className="pb-2" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {allAnnotations.map(a => {
+                        const meta = parseAnnotationMeta(a.cr871_notetext)
+                        const qText = meta?.questionId
+                          ? (questionMap.get(meta.questionId)?.cr871_questiontext?.slice(0, 60) ?? meta.questionId)
+                          : "—"
+                        return (
+                          <tr key={a.cr871_annotationid} className="border-b last:border-0">
+                            <td className="py-2.5 pr-3">
+                              <span className="font-medium">{meta?.fileName ?? a.cr871_annotation1 ?? "—"}</span>
+                            </td>
+                            <td className="py-2.5 pr-3 text-muted-foreground">
+                              {meta?.sectionId ?? "—"}
+                            </td>
+                            <td className="py-2.5 pr-3 text-muted-foreground max-w-[200px] truncate">
+                              {qText}
+                            </td>
+                            <td className="py-2.5 text-right">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+                                onClick={() => void handleEvidenceDelete(a.cr871_annotationid)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </main>
       </div>
     )
@@ -732,7 +988,10 @@ export default function VendorFormPage() {
                   <tr className="border-b">
                     <th className="text-left pb-2 font-medium text-muted-foreground">Section</th>
                     <th className="text-left pb-2 font-medium text-muted-foreground">Status</th>
-                    <th className="text-right pb-2 font-medium text-muted-foreground">Answered</th>
+                    <th className="text-right pb-2 font-medium text-muted-foreground">FI</th>
+                    <th className="text-right pb-2 font-medium text-muted-foreground">Partial</th>
+                    <th className="text-right pb-2 font-medium text-muted-foreground">NI</th>
+                    <th className="text-right pb-2 font-medium text-muted-foreground">N/A</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -741,20 +1000,19 @@ export default function VendorFormPage() {
                       <tr key={i} className="border-b last:border-0">
                         <td className="py-2.5"><Skeleton className="h-4 w-24" /></td>
                         <td className="py-2.5"><Skeleton className="h-5 w-20 rounded-full" /></td>
-                        <td className="py-2.5 text-right"><Skeleton className="h-4 w-12 ml-auto" /></td>
+                        <td className="py-2.5 text-right"><Skeleton className="h-4 w-6 ml-auto" /></td>
+                        <td className="py-2.5 text-right"><Skeleton className="h-4 w-6 ml-auto" /></td>
+                        <td className="py-2.5 text-right"><Skeleton className="h-4 w-6 ml-auto" /></td>
+                        <td className="py-2.5 text-right"><Skeleton className="h-4 w-6 ml-auto" /></td>
                       </tr>
                     ))
                   ) : (
                     orderedSections.map(section => {
                       const status = getSectionStatus(section, applicableQuestions, responseMap)
-                      const qs = applicableQuestions.filter(q => (q.cr871_sectionid ?? "General") === section)
-                      const answeredInSection = qs.filter(q => {
-                        const r = responseMap.get(q.cr871_questionid)
-                        return r && (r.cr871_maturitylevel as unknown as number) !== NOT_ANSWERED
-                      }).length
+                      const counts = getSectionCounts(section, applicableQuestions, responseMap)
                       return (
                         <tr key={section} className="border-b last:border-0">
-                          <td className="py-2.5">
+                          <td className="py-2.5 pr-3">
                             <button
                               type="button"
                               className="text-left hover:underline"
@@ -763,7 +1021,7 @@ export default function VendorFormPage() {
                               {section}
                             </button>
                           </td>
-                          <td className="py-2.5">
+                          <td className="py-2.5 pr-3">
                             <span className={cn(
                               "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
                               SECTION_STATUS_CLASS[status]
@@ -771,9 +1029,10 @@ export default function VendorFormPage() {
                               {status}
                             </span>
                           </td>
-                          <td className="py-2.5 text-right text-muted-foreground">
-                            {answeredInSection}/{qs.length}
-                          </td>
+                          <td className="py-2.5 text-right text-muted-foreground">{counts.fi}</td>
+                          <td className="py-2.5 text-right text-muted-foreground">{counts.partial}</td>
+                          <td className="py-2.5 text-right text-muted-foreground">{counts.ni}</td>
+                          <td className="py-2.5 text-right text-muted-foreground">{counts.na}</td>
                         </tr>
                       )
                     })
@@ -781,6 +1040,9 @@ export default function VendorFormPage() {
                 </tbody>
               </table>
             </div>
+            <p className="text-sm text-muted-foreground pt-3 border-t mt-3">
+              {allAnnotations.length} evidence file{allAnnotations.length !== 1 ? "s" : ""} uploaded
+            </p>
           </CardContent>
         </Card>
 
@@ -797,10 +1059,29 @@ export default function VendorFormPage() {
             {totalCount - answeredCount} question{totalCount - answeredCount === 1 ? "" : "s"} still unanswered — please complete all sections before submitting.
           </p>
         )}
-        <div className="flex justify-between pt-2">
-          <Button variant="outline" onClick={goHome}>Back to Overview</Button>
-          {!isReadOnly && (
-            <Button onClick={() => setShowConfirm(true)} disabled={answeredCount < totalCount}>
+
+        {!isReadOnly && (
+          <div className="flex items-start gap-3 rounded-md border p-4">
+            <Checkbox
+              id="declaration"
+              checked={declarationChecked}
+              onCheckedChange={v => setDeclarationChecked(!!v)}
+            />
+            <Label htmlFor="declaration" className="text-sm leading-snug cursor-pointer">
+              I confirm that all information provided is accurate and complete to the best of my knowledge.
+            </Label>
+          </div>
+        )}
+
+        <div className="flex justify-between pt-2 flex-wrap gap-3">
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={goHome}>Back to Overview</Button>
+            <Button variant="outline" onClick={goEvidence}>Upload Evidence</Button>
+          </div>
+          {isReadOnly ? (
+            <span className="text-sm text-muted-foreground italic self-center">Already submitted</span>
+          ) : (
+            <Button onClick={() => setShowConfirm(true)} disabled={!declarationChecked}>
               Submit Assessment
             </Button>
           )}

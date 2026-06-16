@@ -182,16 +182,16 @@ Two-panel layout: `flex gap-6 items-start` — left panel `w-[380px] shrink-0`, 
 
 ## Vendor Form (`src/pages/vendor-form.tsx`) — implemented (Phase 5 + 6)
 
-Multi-screen wizard contained within `/vendor-form` route. State machine: `screen: "home" | "profile" | "section" | "submit" | "done"` + `currentSection: string | null`. No router changes — `?aid=` URL param preserved throughout.
+Multi-screen wizard contained within `/vendor-form` route. State machine: `screen: "home" | "profile" | "section" | "evidence" | "submit" | "confirmation"` + `currentSection: string | null`. No router changes — `?aid=` URL param preserved throughout.
 
-**Four data queries loaded once at component root:** assessment, responses, questions (ordered by sectionid + sortorder), and vendor record (fetched via `assessment._cr871_vendorid_value`).
+**Five data queries loaded once at component root:** assessment, responses, questions (ordered by sectionid + sortorder), vendor record (fetched via `assessment._cr871_vendorid_value`), and annotations (filtered by `contains(cr871_notetext,'${assessmentId}')` since the table has no FK to assessments).
 
 **Screen_Home:**
 - CMB-branded header using `bg-[--sidebar]` + `text-[--sidebar-primary]` Tailwind v4 CSS variable classes
 - Welcome message + due date label (red + days-remaining if ≤ 7 days from today)
 - `<Progress>` bar: answered/total applicable questions (answered = maturity ≠ NotAnswered 144610004)
 - Section checklist: applicable sections (data-driven from `cr871_applicableratings` on questions), each showing Not Started / In Progress / Complete badge; clickable → navigate to that section
-- "Edit Profile" → Screen_Profile; "Continue Assessment" → first section where status ≠ Complete; "Review & Submit" → Screen_Submit
+- Action buttons: "Edit Profile" → Screen_Profile; "Continue Assessment" → first incomplete section; "Upload Evidence" → Screen_Evidence; "Review & Submit" → Screen_Submit
 
 **Screen_Profile:**
 - Fully read-only grid: Company Name + Legal Entity Name + RC Number (from vendor record) + Contact Email + Primary Contact Name (from assessment)
@@ -201,7 +201,7 @@ Multi-screen wizard contained within `/vendor-form` route. State machine: `scree
 - Single section at a time; breadcrumb shows "Overview / {sectionName}" + "Section X of Y" counter
 - **Batch save** — fields are locally controlled state (`localEdits: Map<questionId, LocalEdit>`); no immediate Dataverse writes on blur/change
 - `localEdits` seeded from `responseMap` when section changes (via `localEditsSection` ref guard); not reset on intermediate data refreshes
-- Bottom nav: "Save & Return Home" | "Discard" | "Save & Next: {name}" or "Save & Review" (last section); read-only mode shows Back/Next without saves
+- Bottom nav: "Save & Return Home" | "Upload Evidence" | "Discard" | "Save & Next: {name}" or "Save & Review" (last section); read-only mode shows Back / Upload Evidence / Next without saves
 - **Question cards render regardless of whether a Dataverse response record exists.** Save creates the record if missing (create-or-update pattern), so stub pre-creation is not a hard dependency.
 - **Gate logic — two patterns, distinguished by `cr871_iscoveredbycert` on the sub-question:**
   - **HIDE-ON-YES** (G1B → 1.5–1.8, G8A → 8.1–8.2): sub-questions have `GateQuestionID` + `IsCoveredByCert=true`. Always visible. When gate local maturity = FI: grey overlay ("Covered by certification") appears. On Save with gate FI: written as `{maturitylevel: NotApplicable, iscovered: true}`. On Save with gate ≠ FI: actual values saved.
@@ -211,13 +211,23 @@ Multi-screen wizard contained within `/vendor-form` route. State machine: `scree
 - Gate trigger: maturity = Fully Implemented (144610000) = "Yes" answer on the gate question.
 - **Resume support**: `localEdits` initialised from saved responses, so gate overlay and visibility restore correctly on re-open.
 
-**Screen_Submit:**
-- Summary table: section | status badge | answered/total per section
-- Overall `<Progress>` bar
-- Submit blocked with amber warning if `answeredCount < totalCount`
-- "Submit Assessment" button → confirmation dialog → patches status=Submitted (144610002) + submitdate + overallscore → transitions to Screen_Done
+**Screen_Evidence (Phase 7):**
+- Section dropdown (optional, defaults "All sections") and Question Reference dropdown (optional, filtered to questions where `cr871_evidencerequired` is set)
+- File picker (`<input type="file">` hidden, triggered via styled label) + Upload button
+- Upload: reads file as base64 data URL via `FileReader`; creates `cr871_annotations` record with `cr871_annotation1` = file name, `cr871_attachmenturl` = data URL, `cr871_notetext` = JSON `{assessmentId, sectionId, questionId, uploadedBy, fileName}`
+- Gallery table: all annotations for this assessment — file name, section, question reference (resolved from questionMap), delete button (calls `Cr871_annotationsService.delete`)
+- Evidence is optional and never blocks submission; accessible from Home and any section screen
 
-**Screen_Done:** full-page success message (CheckCircle2 icon).
+**Screen_Submit (Phase 7 enhanced):**
+- Section table: Section | Status badge | FI | Partial | NI | N/A counts (via `getSectionCounts()`)
+- Evidence file count shown below the table
+- Overall `<Progress>` bar + unanswered warning (warning only, does not block submit)
+- Vendor declaration checkbox — Submit button is disabled until checked
+- "Upload Evidence" shortcut button in footer
+- Already-submitted guard: when `isReadOnly` (status ≥ Submitted), Submit button replaced by "Already submitted" label
+- On Submit: confirmation dialog → patches status=Submitted (144610002) + submitdate + overallscore → navigates to Screen_Confirmation
+
+**Screen_Confirmation (Phase 7, replaces Screen_Done):** success icon, thank-you message, assessment reference number (`cr871_assessmentid1`). No back button.
 
 **Status transition (Invited → InProgress):** fires inside `handleSectionSave` on first Save. Guarded by `statusTransitioned` useRef (set optimistically, reset on failure) + secondary useEffect that sets ref if DB status is already ≠ Invited.
 
